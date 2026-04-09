@@ -20,10 +20,11 @@ enum AcademicYear {
 }
 export class CreateFormDto {
   @IsString()
+  @IsNotEmpty()
   name: string;
 
-  @IsString()
   @IsEmail()
+  @IsNotEmpty()
   email: string;
 
   @Type(() => Number)
@@ -40,5 +41,6 @@ export class CreateFormDto {
   college: College;
 
   @IsString()
+  @IsNotEmpty()
   college_id: string;
 }
