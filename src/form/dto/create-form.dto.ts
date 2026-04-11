@@ -18,6 +18,19 @@ enum AcademicYear {
   Third = 3,
   Fourth = 4,
 }
+
+export enum Committee {
+  Frontend = 'frontend',
+  Backend = 'backend',
+  ScienceTech = 'science-tech',
+  Linux = 'linux',
+  GameDev = 'game-dev',
+  UIUX = 'uiux',
+  Flutter = 'flutter',
+  Blender = 'blender',
+  HR = 'hr',
+  PR = 'pr',
+}
 export class CreateFormDto {
   @IsString()
   @IsNotEmpty()
@@ -43,4 +56,8 @@ export class CreateFormDto {
   @IsString()
   @IsNotEmpty()
   college_id: string;
+
+  @IsString()
+  @IsEnum(Committee)
+  committee: Committee;
 }

@@ -1,4 +1,4 @@
-import { Controller, Post, Body } from '@nestjs/common';
+import { Controller, Post, Get, Body } from '@nestjs/common';
 import { FormService } from './form.service';
 import { CreateFormDto } from './dto/create-form.dto';
 
@@ -9,5 +9,10 @@ export class FormController {
   @Post()
   Add(@Body() createFormDto: CreateFormDto) {
     return this.formService.add(createFormDto);
+  }
+
+  @Get('capacity')
+  checkCapacity() {
+    return this.formService.checkCapacity();
   }
 }
