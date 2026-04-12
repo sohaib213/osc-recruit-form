@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { google, sheets_v4 } from 'googleapis';
 import { CreateFormDto } from './dto/create-form.dto';
+import { Mutex } from 'async-mutex';
 
 @Injectable()
 export class FormService {
@@ -14,7 +15,9 @@ export class FormService {
   private spreadsheetId: string;
   private readonly sheetName = 'Sheet1';
   private readonly LIMIT_CELL = 'H1';
-  private readonly COUNTER_CELL = 'H2'; // Cell to store the counter
+  private readonly COUNTER_CELL = 'H2';
+  private readonly mutex = new Mutex();
+
   constructor() {
     this.initializeGoogleSheets();
     this.spreadsheetId = process.env.GOOGLE_SPREADSHEET_ID || '';
@@ -53,12 +56,13 @@ export class FormService {
 
     if (value === undefined || value === null || value === '') {
       throw new Error(
-        'Limit cell (I1) is empty. Please set a limit value in the sheet.',
+        'Limit cell (H1) is empty. Please set a limit value in the sheet.',
       );
     }
 
     return parseInt(value, 10) || 0;
   }
+
   private async getCounter(): Promise<number> {
     const response = await this.sheets.spreadsheets.values.get({
       spreadsheetId: this.spreadsheetId,
@@ -67,7 +71,6 @@ export class FormService {
 
     const value = response.data.values?.[0]?.[0];
 
-    // If cell is empty, initialize it to 0
     if (value === undefined || value === null || value === '') {
       await this.setCounter(0);
       return 0;
@@ -87,9 +90,7 @@ export class FormService {
     });
   }
 
-  async checkCapacity(): Promise<{
-    isFull: boolean;
-  }> {
+  async checkCapacity(): Promise<{ isFull: boolean }> {
     const [count, limit] = await Promise.all([
       this.getCounter(),
       this.getLimit(),
@@ -105,115 +106,113 @@ export class FormService {
     message: string;
     data: CreateFormDto;
   }> {
-    try {
-      const [
-        currentCount,
-        limit,
-        existingEmails,
-        existingCollegeIds,
-        existingPhones,
-      ] = await Promise.all([
-        this.getCounter(),
-        this.getLimit(),
-        this.getExistingEmails(),
-        this.getExistingCollegeIds(),
-        this.getExistingPhones(),
-      ]);
+    return await this.mutex.runExclusive(async () => {
+      try {
+        const [
+          currentCount,
+          limit,
+          existingEmails,
+          existingCollegeIds,
+          existingPhones,
+        ] = await Promise.all([
+          this.getCounter(),
+          this.getLimit(),
+          this.getExistingEmails(),
+          this.getExistingCollegeIds(),
+          this.getExistingPhones(),
+        ]);
 
-      if (currentCount >= limit) {
-        throw new BadRequestException(
-          `Form limit of ${limit} has been reached. No more submissions allowed.`,
+        if (currentCount >= limit) {
+          throw new BadRequestException(
+            `Form limit of ${limit} has been reached. No more submissions allowed.`,
+          );
+        }
+
+        if (existingEmails.includes(createFormDto.email.toLowerCase())) {
+          throw new ConflictException(
+            `Email ${createFormDto.email} has already been submitted.`,
+          );
+        }
+
+        if (
+          existingCollegeIds.includes(createFormDto.college_id.toLowerCase())
+        ) {
+          throw new ConflictException(
+            `College ID ${createFormDto.college_id} has already been submitted.`,
+          );
+        }
+
+        if (existingPhones.includes(createFormDto.phone)) {
+          throw new ConflictException(
+            `Phone number ${createFormDto.phone} has already been submitted.`,
+          );
+        }
+
+        const rowData: string[] = [
+          createFormDto.name,
+          createFormDto.email,
+          String(createFormDto.academic_year),
+          `'${createFormDto.phone}`,
+          createFormDto.college,
+          createFormDto.college_id,
+          createFormDto.committee,
+        ];
+
+        await this.sheets.spreadsheets.values.append({
+          spreadsheetId: this.spreadsheetId,
+          range: `${this.sheetName}!A:G`,
+          valueInputOption: 'USER_ENTERED',
+          requestBody: { values: [rowData] },
+        });
+
+        await this.setCounter(currentCount + 1);
+
+        return {
+          success: true,
+          message: 'Form submitted successfully',
+          data: createFormDto,
+        };
+      } catch (error) {
+        if (error instanceof HttpException) {
+          throw error;
+        }
+        const errorMessage =
+          error instanceof Error ? error.message : 'Unknown error occurred';
+        console.error('Error submitting form:', errorMessage);
+        throw new InternalServerErrorException(
+          `Failed to submit form: ${errorMessage}`,
         );
       }
-
-      if (existingEmails.includes(createFormDto.email.toLowerCase())) {
-        throw new ConflictException(
-          `Email ${createFormDto.email} has already been submitted.`,
-        );
-      }
-
-      if (existingCollegeIds.includes(createFormDto.college_id.toLowerCase())) {
-        throw new ConflictException(
-          `College ID ${createFormDto.college_id} has already been submitted.`,
-        );
-      }
-
-      if (existingPhones.includes(createFormDto.phone)) {
-        throw new ConflictException(
-          `Phone number ${createFormDto.phone} has already been submitted.`,
-        );
-      }
-
-      const rowData: string[] = [
-        createFormDto.name,
-        createFormDto.email,
-        String(createFormDto.academic_year),
-        `'${createFormDto.phone}`,
-        createFormDto.college,
-        createFormDto.college_id,
-        createFormDto.committee,
-      ];
-
-      await this.sheets.spreadsheets.values.append({
-        spreadsheetId: this.spreadsheetId,
-        range: `${this.sheetName}!A:G`,
-        valueInputOption: 'USER_ENTERED',
-        requestBody: { values: [rowData] },
-      });
-
-      await this.setCounter(currentCount + 1);
-
-      return {
-        success: true,
-        message: 'Form submitted successfully',
-        data: createFormDto,
-      };
-    } catch (error) {
-      // Re-throw NestJS HTTP exceptions directly without wrapping them
-      if (error instanceof HttpException) {
-        throw error;
-      }
-      const errorMessage =
-        error instanceof Error ? error.message : 'Unknown error occurred';
-      console.error('Error submitting form:', errorMessage);
-      throw new InternalServerErrorException(
-        `Failed to submit form: ${errorMessage}`,
-      );
-    }
+    });
   }
 
   private async getExistingEmails(): Promise<string[]> {
     const response = await this.sheets.spreadsheets.values.get({
       spreadsheetId: this.spreadsheetId,
-      range: `${this.sheetName}!B:B`, // Email is column B
+      range: `${this.sheetName}!B:B`,
     });
 
     const rows = response.data.values || [];
-
-    // Skip header row and normalize to lowercase for case-insensitive comparison
     return rows.slice(1).map((row) => row[0]?.toLowerCase() || '');
   }
 
   private async getExistingCollegeIds(): Promise<string[]> {
     const response = await this.sheets.spreadsheets.values.get({
       spreadsheetId: this.spreadsheetId,
-      range: `${this.sheetName}!F:F`, // college_id is column F
+      range: `${this.sheetName}!F:F`,
     });
 
     const rows = response.data.values || [];
-
     return rows.slice(1).map((row) => row[0]?.toLowerCase() || '');
   }
 
   private async getExistingPhones(): Promise<string[]> {
     const response = await this.sheets.spreadsheets.values.get({
       spreadsheetId: this.spreadsheetId,
-      range: `${this.sheetName}!D:D`, // phone is column D
+      range: `${this.sheetName}!D:D`,
     });
 
     const rows = response.data.values || [];
-
-    // Strip the leading apostrophe added during insert ('01068652041 -> 01068652041)
     return rows.slice(1).map((row) => row[0]?.replace(/^'/, '') || '');
   }
 }
