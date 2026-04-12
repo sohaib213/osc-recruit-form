@@ -58,6 +58,6 @@ export class CreateFormDto {
   college_id: string;
 
   @IsString()
-  @IsEnum(Committee)
+  // @IsEnum(Committee)
   committee: Committee;
 }
