@@ -59,5 +59,5 @@ export class CreateFormDto {
 
   @IsString()
   // @IsEnum(Committee)
-  committee: Committee;
+  committee: string;
 }
