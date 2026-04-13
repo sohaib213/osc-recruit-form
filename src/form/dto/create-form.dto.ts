@@ -28,6 +28,7 @@ export enum Committee {
   UIUX = 'uiux',
   Flutter = 'flutter',
   Blender = 'blender',
+  Media = 'media',
   HR = 'hr',
   PR = 'pr',
 }
