@@ -25,7 +25,7 @@ export enum Committee {
   ScienceTech = 'science and tech',
   Linux = 'linux',
   GameDev = 'game development',
-  UIUX = 'uiux',
+  UIUX = 'ui/ux',
   Flutter = 'flutter',
   Blender = 'blender',
   Media = 'media',
