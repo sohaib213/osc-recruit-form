@@ -29,6 +29,7 @@ export class FormService {
     [Committee.Blender]: 8,
     [Committee.HR]: 9,
     [Committee.PR]: 10,
+    [Committee.Media]: 11,
   };
 
   constructor() {
