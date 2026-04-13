@@ -11,8 +11,8 @@ export class FormController {
     return this.formService.add(createFormDto);
   }
 
-  @Get('capacity')
-  checkCapacity() {
-    return this.formService.checkCapacity();
+  @Get('committees')
+  getAvailableCommittees() {
+    return this.formService.getAvailableCommittees();
   }
 }

@@ -6,7 +6,7 @@ import {
   InternalServerErrorException,
 } from '@nestjs/common';
 import { google, sheets_v4 } from 'googleapis';
-import { CreateFormDto } from './dto/create-form.dto';
+import { CreateFormDto, Committee } from './dto/create-form.dto';
 import { Mutex } from 'async-mutex';
 
 @Injectable()
@@ -14,9 +14,22 @@ export class FormService {
   private sheets!: sheets_v4.Sheets;
   private spreadsheetId: string;
   private readonly sheetName = 'Sheet1';
-  private readonly LIMIT_CELL = 'H1';
-  private readonly COUNTER_CELL = 'H2';
+  private readonly COMMITTEE_COUNT_COL = 'J';
+  private readonly COMMITTEE_MAX_COL = 'K';
   private readonly mutex = new Mutex();
+
+  private readonly COMMITTEE_ROWS: Record<Committee, number> = {
+    [Committee.Frontend]: 1,
+    [Committee.Backend]: 2,
+    [Committee.ScienceTech]: 3,
+    [Committee.Linux]: 4,
+    [Committee.GameDev]: 5,
+    [Committee.UIUX]: 6,
+    [Committee.Flutter]: 7,
+    [Committee.Blender]: 8,
+    [Committee.HR]: 9,
+    [Committee.PR]: 10,
+  };
 
   constructor() {
     this.initializeGoogleSheets();
@@ -46,59 +59,78 @@ export class FormService {
     this.sheets = google.sheets({ version: 'v4', auth });
   }
 
-  private async getLimit(): Promise<number> {
+  // ── Per-committee capacity ───────────────────────────────────────────────
+
+  private async getAllCommitteeCapacities(): Promise<
+    Record<Committee, { current: number; max: number }>
+  > {
+    const committees = Object.values(Committee) as Committee[];
+    const rows = Object.values(this.COMMITTEE_ROWS);
+    const minRow = Math.min(...rows);
+    const maxRow = Math.max(...rows);
+
     const response = await this.sheets.spreadsheets.values.get({
       spreadsheetId: this.spreadsheetId,
-      range: `${this.sheetName}!${this.LIMIT_CELL}`,
+      range: `${this.sheetName}!${this.COMMITTEE_COUNT_COL}${minRow}:${this.COMMITTEE_MAX_COL}${maxRow}`,
     });
 
-    const value = response.data.values?.[0]?.[0];
+    const values = response.data.values || [];
+    const result = {} as Record<Committee, { current: number; max: number }>;
 
-    if (value === undefined || value === null || value === '') {
-      throw new Error(
-        'Limit cell (H1) is empty. Please set a limit value in the sheet.',
-      );
+    for (const committee of committees) {
+      const rowIndex = this.COMMITTEE_ROWS[committee] - minRow;
+      const rowData = values[rowIndex] || [];
+      result[committee] = {
+        current: parseInt(rowData[0], 10) || 0,
+        max: parseInt(rowData[1], 10) || 0,
+      };
     }
 
-    return parseInt(value, 10) || 0;
+    return result;
   }
 
-  private async getCounter(): Promise<number> {
+  private async getCommitteeCapacity(
+    committee: Committee,
+  ): Promise<{ current: number; max: number }> {
+    const row = this.COMMITTEE_ROWS[committee];
     const response = await this.sheets.spreadsheets.values.get({
       spreadsheetId: this.spreadsheetId,
-      range: `${this.sheetName}!${this.COUNTER_CELL}`,
+      range: `${this.sheetName}!${this.COMMITTEE_COUNT_COL}${row}:${this.COMMITTEE_MAX_COL}${row}`,
     });
-
-    const value = response.data.values?.[0]?.[0];
-
-    if (value === undefined || value === null || value === '') {
-      await this.setCounter(0);
-      return 0;
-    }
-
-    return parseInt(value, 10) || 0;
+    const rowData = response.data.values?.[0] || [];
+    return {
+      current: parseInt(rowData[0], 10) || 0,
+      max: parseInt(rowData[1], 10) || 0,
+    };
   }
 
-  private async setCounter(value: number): Promise<void> {
+  private async incrementCommitteeCounter(
+    committee: Committee,
+    currentCount: number,
+  ): Promise<void> {
+    const row = this.COMMITTEE_ROWS[committee];
     await this.sheets.spreadsheets.values.update({
       spreadsheetId: this.spreadsheetId,
-      range: `${this.sheetName}!${this.COUNTER_CELL}`,
+      range: `${this.sheetName}!${this.COMMITTEE_COUNT_COL}${row}`,
       valueInputOption: 'RAW',
-      requestBody: {
-        values: [[value]],
-      },
+      requestBody: { values: [[currentCount + 1]] },
     });
   }
 
-  async checkCapacity(): Promise<{ isFull: boolean }> {
-    const [count, limit] = await Promise.all([
-      this.getCounter(),
-      this.getLimit(),
-    ]);
+  // ── Public endpoints ─────────────────────────────────────────────────────
 
-    return {
-      isFull: count >= limit,
-    };
+  async getAvailableCommittees(): Promise<{ available: Committee[] }> {
+    const capacities = await this.getAllCommitteeCapacities();
+    const available: Committee[] = [];
+
+    for (const [committee, cap] of Object.entries(capacities) as [
+      Committee,
+      { current: number; max: number },
+    ][]) {
+      if (cap.current < cap.max) available.push(committee);
+    }
+
+    return { available };
   }
 
   async add(createFormDto: CreateFormDto): Promise<{
@@ -109,22 +141,21 @@ export class FormService {
     return await this.mutex.runExclusive(async () => {
       try {
         const [
-          currentCount,
-          limit,
+          committeeCapacity,
           existingEmails,
           existingCollegeIds,
           existingPhones,
         ] = await Promise.all([
-          this.getCounter(),
-          this.getLimit(),
+          this.getCommitteeCapacity(createFormDto.committee),
           this.getExistingEmails(),
           this.getExistingCollegeIds(),
           this.getExistingPhones(),
         ]);
 
-        if (currentCount >= limit) {
+        // Per-committee limit (max=0 means unlimited)
+        if (committeeCapacity.current >= committeeCapacity.max) {
           throw new BadRequestException(
-            `Form limit of ${limit} has been reached. No more submissions allowed.`,
+            `The ${createFormDto.committee} committee is full`,
           );
         }
 
@@ -133,7 +164,6 @@ export class FormService {
             `Email ${createFormDto.email} has already been submitted.`,
           );
         }
-
         if (
           existingCollegeIds.includes(createFormDto.college_id.toLowerCase())
         ) {
@@ -141,7 +171,6 @@ export class FormService {
             `College ID ${createFormDto.college_id} has already been submitted.`,
           );
         }
-
         if (existingPhones.includes(createFormDto.phone)) {
           throw new ConflictException(
             `Phone number ${createFormDto.phone} has already been submitted.`,
@@ -165,7 +194,10 @@ export class FormService {
           requestBody: { values: [rowData] },
         });
 
-        await this.setCounter(currentCount + 1);
+        await this.incrementCommitteeCounter(
+          createFormDto.committee,
+          committeeCapacity.current,
+        );
 
         return {
           success: true,
@@ -173,9 +205,7 @@ export class FormService {
           data: createFormDto,
         };
       } catch (error) {
-        if (error instanceof HttpException) {
-          throw error;
-        }
+        if (error instanceof HttpException) throw error;
         const errorMessage =
           error instanceof Error ? error.message : 'Unknown error occurred';
         console.error('Error submitting form:', errorMessage);
@@ -186,14 +216,16 @@ export class FormService {
     });
   }
 
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
   private async getExistingEmails(): Promise<string[]> {
     const response = await this.sheets.spreadsheets.values.get({
       spreadsheetId: this.spreadsheetId,
       range: `${this.sheetName}!B:B`,
     });
-
-    const rows = response.data.values || [];
-    return rows.slice(1).map((row) => row[0]?.toLowerCase() || '');
+    return (response.data.values || [])
+      .slice(1)
+      .map((r) => r[0]?.toLowerCase() || '');
   }
 
   private async getExistingCollegeIds(): Promise<string[]> {
@@ -201,9 +233,9 @@ export class FormService {
       spreadsheetId: this.spreadsheetId,
       range: `${this.sheetName}!F:F`,
     });
-
-    const rows = response.data.values || [];
-    return rows.slice(1).map((row) => row[0]?.toLowerCase() || '');
+    return (response.data.values || [])
+      .slice(1)
+      .map((r) => r[0]?.toLowerCase() || '');
   }
 
   private async getExistingPhones(): Promise<string[]> {
@@ -211,8 +243,8 @@ export class FormService {
       spreadsheetId: this.spreadsheetId,
       range: `${this.sheetName}!D:D`,
     });
-
-    const rows = response.data.values || [];
-    return rows.slice(1).map((row) => row[0]?.replace(/^'/, '') || '');
+    return (response.data.values || [])
+      .slice(1)
+      .map((r) => r[0]?.replace(/^'/, '') || '');
   }
 }

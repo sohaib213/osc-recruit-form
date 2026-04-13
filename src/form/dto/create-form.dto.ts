@@ -22,9 +22,9 @@ enum AcademicYear {
 export enum Committee {
   Frontend = 'frontend',
   Backend = 'backend',
-  ScienceTech = 'science-tech',
+  ScienceTech = 'science and tech',
   Linux = 'linux',
-  GameDev = 'game-dev',
+  GameDev = 'game development',
   UIUX = 'uiux',
   Flutter = 'flutter',
   Blender = 'blender',
@@ -58,6 +58,6 @@ export class CreateFormDto {
   college_id: string;
 
   @IsString()
-  // @IsEnum(Committee)
-  committee: string;
+  @IsEnum(Committee)
+  committee: Committee;
 }
